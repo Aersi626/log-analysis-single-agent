@@ -1,0 +1,77 @@
+services:
+  # 1️⃣ Elasticsearch Service
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g  # Adjust based on available RAM
+      - xpack.security.enabled=false  # Disable auth & TLS for dev
+      - xpack.security.transport.ssl.enabled=false
+    ports:
+      - "9200:9200"   # HTTP
+      - "9300:9300"   # Transport (optional)
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - log_analysis_net
+
+  # 2️⃣ Embedding Service
+  embedding_service:
+    image: ghcr.io/huggingface/text-embeddings-inference:latest
+    container_name: embedding_service
+    environment:
+      - MODEL_ID=BAAI/bge-small-en-v1.5
+    ports:
+      - "8080:80"   # Map TEI API to host port 8080 (optional)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all     # or 0 if no GPU
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:80/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - log_analysis_net
+
+  # 3️⃣ RAG Application
+  rag_app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: rag_app
+    ports:
+      - "8501:8501"   # Streamlit UI
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - OLLAMA_API_BASE_URL=http://host.docker.internal:11434
+      - EMBEDDING_API_BASE_URL=http://embedding_service:80
+      - OLLAMA_MODEL=mistral
+      - EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+      - LOG_INDEX_NAME=your_log_index
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      embedding_service:
+        condition: service_healthy
+    networks:
+      - log_analysis_net
+
+volumes:
+  esdata:  # Persistent ES data
+
+networks:
+  log_analysis_net:
+    driver: bridge
